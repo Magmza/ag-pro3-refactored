@@ -1,0 +1,84 @@
+/* Estilo Global Premium (Dark Mode / Glassmorphism) */
+:root {
+    --bg-color: #0d1117;
+    --card-bg: rgba(22, 27, 34, 0.7);
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --accent: #58a6ff;
+    --success: #2ea043;
+    --danger: #f85149;
+    --border: rgba(255, 255, 255, 0.1);
+}
+
+.stApp {
+    background-color: var(--bg-color);
+    color: var(--text-primary);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* Glassmorphism para las tarjetas y sidebar */
+.css-1d391kg, .stSidebar, .st-emotion-cache-16txtl3 {
+    background: var(--card-bg) !important;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-right: 1px solid var(--border);
+}
+
+/* Estilo de los DataFrames y tablas */
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+/* Botones Premium */
+.stButton > button {
+    background: linear-gradient(135deg, #1f6feb 0%, #388bfd 100%);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 0.5rem 1rem;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 12px rgba(31, 111, 235, 0.3);
+}
+
+.stButton > button:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(31, 111, 235, 0.5);
+    background: linear-gradient(135deg, #388bfd 0%, #58a6ff 100%);
+}
+
+/* Títulos y Headers */
+h1, h2, h3 {
+    background: -webkit-linear-gradient(#e6edf3, #8b949e);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    font-weight: 800;
+}
+
+/* Métricas (KPIs) */
+[data-testid="stMetricValue"] {
+    color: var(--accent);
+    font-weight: 700;
+}
+[data-testid="stMetricDelta"] svg {
+    display: none; /* Ocultar icono por defecto si queremos custom */
+}
+
+/* Vista de tabla ultra-compacta sin scrollbars */
+.compact-table table {
+    width: 100% !important;
+    font-size: 11px !important;
+    border-collapse: collapse;
+}
+
+.compact-table th, .compact-table td {
+    padding: 4px 2px !important;
+    text-align: center !important;
+    white-space: nowrap !important;
+}
+
+.compact-table tr:nth-child(even) {
+    background-color: rgba(255, 255, 255, 0.05);
+}

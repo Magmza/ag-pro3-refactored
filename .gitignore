@@ -1,0 +1,72 @@
+# ─── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+.installed.cfg
+*.egg
+
+# ─── Virtual envs ──────────────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ─── Environment / secrets (NUNCA subir esto) ─────────────
+.env
+.env.local
+.env.*.local
+*.secret
+secrets.json
+
+# ─── Datos históricos (muy pesados, se regeneran) ────────
+duka_temp_*/
+hist_*.csv
+*.bi5
+data/raw/
+data/processed/
+
+# ─── Estado de la app / DB local ──────────────────────────
+saved_strategies.json
+*.db
+*.sqlite
+*.sqlite3
+db_backup_*
+
+# ─── Logs ─────────────────────────────────────────────────
+logs/
+*.log
+
+# ─── IDE / Editor ─────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─── Streamlit ────────────────────────────────────────────
+.streamlit/secrets.toml
+
+# ─── Jupyter ──────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ─── Coverage / tests ─────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+coverage.xml
+
+# ─── OS ───────────────────────────────────────────────────
+.DS_Store
+ehthumbs.db
