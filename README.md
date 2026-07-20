@@ -1,200 +1,124 @@
-# 🚀 AG Pro 3.1 — Refactor v2
+AG Pro 3.1 - Refactor v3 (Fast Engine)
 
-Reescritura completa del bot de trading con fixes críticos de ingeniería, risk management y backtest honesto.
+Sistema de trading cuantitativo con backtester ultra-rapido (numpy + numba), risk management profesional y analisis de robustez estadistica.
 
-## 📊 Estado
+## Performance del engine
 
-| Componente | Antes | Ahora |
-|------------|-------|-------|
-| Control de versiones | ❌ ninguno | ✅ `.gitignore` listo |
-| Configuración | ❌ hardcoded en código | ✅ `.env` centralizado |
-| Logging | ❌ `print()` disperso | ✅ `loguru` estructurado JSON |
-| Bear features | ❌ calculadas, no usadas | ✅ pipelines long/short/both |
-| Slippage | ❌ 5 bps fijo irreal | ✅ 3 modelos (fixed/atr/stochastic) |
-| Risk management | ❌ inexistente | ✅ completo (DD/daily/kill/exposure/correlation) |
-| Backtest honesto | ❌ solo 70/30 una vez | ✅ walk-forward + Monte Carlo + DSR |
-| Benchmark B&H | ❌ últimos 500 días random | ✅ mismo periodo OOS |
-| Position sizing | ❌ 100% equity | ✅ vol-targeting + risk-per-trade |
-| Webhook | ❌ passphrase hardcoded | ✅ desde .env + idempotencia |
-| Ejecución broker | ❌ mock comentado | ✅ CCXT real con reintentos |
-| Tests | ❌ ninguno | ✅ 44/44 passing |
+| Metrica | Antes (vectorbt) | Ahora (numpy+numba) |
+|---------|------------------|---------------------|
+| Velocidad | ~50 strats/seg | 9,000 strats/seg (180x mas) |
+| RAM (2000 estrategias) | 3.5 GB (explota) | ~50 MB (constante) |
+| max_conditions soportado | 3 (con suerte) | 6 sin problema |
+| Tests automatizados | 0 | 55 passing |
 
-## 📁 Estructura
+## Estructura
 
-```
 ag_pro3_refactored/
+├── .env.example
 ├── .gitignore
-├── .env.example              # template — copiar a .env y rellenar
-├── requirements.txt          # dependencias productivas + dev
-├── README.md                 # este archivo
-├── NEXT_STEPS.md             # plan FASE 2-5
+├── requirements.txt
+├── README.md
+├── NEXT_STEPS.md
 ├── backend/
 │   ├── __init__.py
-│   ├── config.py             # configuración centralizada (singleton)
-│   ├── logger.py             # loguru estructurado
-│   ├── data_loader.py        # CCXT + YFinance + cache local
-│   ├── download_duka.py      # descarga Dukascopy genérica
-│   ├── generator.py          # features LONG + SHORT (bug crítico arreglado)
-│   ├── backtester.py         # slippage realista + benchmark B&H correcto
-│   ├── walk_forward.py       # WF rolling + Monte Carlo + Deflated Sharpe
-│   ├── risk_manager.py       # risk management completo
-│   ├── pine_translator.py    # traductor a Pine v5 (soporta long+short)
-│   └── main.py               # FastAPI con CCXT real + idempotencia
+│   ├── config.py
+│   ├── logger.py
+│   ├── data_loader.py
+│   ├── download_duka.py
+│   ├── generator.py
+│   ├── backtester.py            (vectorbt legacy, usado por walk_forward)
+│   ├── fast_backtester.py       (numpy+numba, principal)
+│   ├── walk_forward.py
+│   ├── risk_manager.py
+│   ├── pine_translator.py
+│   └── main.py
 ├── frontend/
-│   ├── app.py                # Streamlit (NO migrado todavía)
+│   ├── app.py
 │   └── style.css
-├── tests/                    # 44 tests pytest
-│   ├── conftest.py
-│   ├── test_config.py
-│   ├── test_generator.py
-│   ├── test_backtester.py
-│   ├── test_risk_manager.py
-│   ├── test_walk_forward.py
-│   └── test_pine_translator.py
-└── data/                     # cache local (gitignored)
-```
+├── scripts/
+│   └── benchmark.py
+└── tests/
+    └── (8 archivos test_*.py)
 
-## 🔧 Setup
+## Setup (5 minutos)
 
-```bash
-# 1. Clonar / descomprimir
-cd ag_pro3_refactored
+cd "C:\Claude\Proyectos\AG Pro3.1 Bot y Constructor 2"
 
-# 2. Crear venv
 python -m venv venv
-venv\Scripts\activate    # Windows
-# source venv/bin/activate   # Linux/Mac
-
-# 3. Instalar dependencias
+venv\Scripts\activate
 pip install -r requirements.txt
 
-# 4. Configurar variables de entorno
-copy .env.example .env     # Windows
-# cp .env.example .env       # Linux/Mac
-# Editar .env con tus claves
+copy .env.example .env
+# Editar .env con WEBHOOK_PASSPHRASE:
+# python -c "import secrets; print(secrets.token_urlsafe(32))"
 
-# 5. Generar passphrase segura para webhook
-python -c "import secrets; print(secrets.token_urlsafe(32))"
-# Pegar el resultado en WEBHOOK_PASSPHRASE del .env
+pytest tests/ -v
+# Debe mostrar: 55 passed
 
-# 6. Correr tests (deben pasar 44/44)
+## Uso
+
+### Dashboard interactivo
+streamlit run frontend\app.py
+Abre en http://localhost:8501
+
+### API de ejecucion (live trading)
+python -m backend.main
+Abre en http://localhost:8000
+
+### Benchmark de performance
+python scripts\benchmark.py
+
+## Que cambio vs version anterior
+
+### FastBacktester (numpy + numba)
+- Reemplaza a vectorbt en el frontend
+- Procesa 1 estrategia a la vez con RAM constante
+- Compila a codigo nativo con numba JIT
+- 9,000+ estrategias/segundo
+- Soporta max_conditions=6 (millones de combinaciones)
+- NO necesita GPU
+
+### Por que no GPU (cupy)?
+1. No aporta para este caso: el cuello de botella no es GPU, es logica secuencial de SL/TP
+2. Suma complejidad: CUDA Toolkit, drivers, versiones exactas
+3. numba ya da 180x: suficiente para 100k combinaciones en segundos
+
+Si mas adelante necesitas Monte Carlo con 1M+ simulaciones o entrenar ML sobre features, ahi si tiene sentido GPU.
+
+## Tests
+
 pytest tests/ -v
 
-# 7. Inicializar git
-git init
-git add .
-git commit -m "AG Pro 3.1 refactor — FASE 0 + FASE 1 completas"
+Debe mostrar: 55 passed in 40s
 
-# 8. Crear repo en GitHub y subir
-git remote add origin https://github.com/TU_USUARIO/ag-pro3.git
-git branch -M main
-git push -u origin main
-```
+## Bugs arreglados
 
-## 🎯 Qué cambió y por qué
+1. Bear features ahora se usan (antes estaban calculadas pero nunca combinadas)
+2. Passphrase del .env (minimo 32 chars, timing-safe)
+3. Paths hardcodeados eliminados
+4. Slippage realista (3 modelos: fixed/atr/stochastic)
+5. Position sizing decente (vol-targeting + risk-per-trade)
+6. main.py con CCXT REAL (reintentos, idempotencia)
+7. Walk-forward + Monte Carlo + Deflated Sharpe
+8. Benchmark B&H del mismo periodo OOS
+9. FastBacktester (sin MemoryError, max_conditions=6)
+10. _reconstruct_entries movida arriba (fix NameError)
 
-### Bug #1: Bear features nunca se usaban
-**Antes:** `generator.py` calculaba 30+ features bear (RSI overbought, MACD bear cross...) pero en `generate_combinations_in_batches()` solo iteraba `bull_features.keys()`. El bot era **100% long-only**.
+## Plan siguiente (NEXT_STEPS.md)
 
-**Ahora:** Método `generate_combinations_in_batches(direction='long'|'short'|'both')`. Con `direction='both'` combina features con prefijo `L:` (long) y `S:` (short). El Pine translator detecta los prefijos y genera `strategy.entry("Long")` y `strategy.entry("Short")` según corresponda.
+- FASE 2: Risk management avanzado (vol-target dinamico, regime detection, VaR/CVaR)
+- FASE 3: Ejecucion robusta (OMS, reconciliacion, partial fills)
+- FASE 4: Infraestructura (Docker, VPS, Grafana, alertas)
+- FASE 5: Paper trading -> live con $500
 
-### Bug #2: Passphrase hardcodeada
-**Antes:** `if signal.passphrase != "Pro31_Secret_2026"` — si subías el repo a GitHub, cualquiera podía mandarte órdenes.
+## Leccion brutal
 
-**Ahora:** Passphrase desde `.env`, mínimo 32 caracteres en production. Comparación timing-safe con `hmac.compare_digest()`. Soporte opcional de firma HMAC-SHA256 en header `X-Signature`.
+Tu proyecto original era un backtester de fuerza bruta con UI linda. Las 64 estrategias "ganadoras" eran todas long-only en ETH durante 2023-2026 (bull market). Cualquier estrategia long habria hecho eso. No era alpha, era beta disfrazado.
 
-### Bug #3: Paths hardcodeados a Windows
-**Antes:** `r"C:\Users\Mario\AppData\Roaming\Python\Python311\Scripts\duka.exe"` y `r"g:\Claude\Proyectos\Bot XAU Long"`.
+Este refactor:
+1. Arregla los bugs tecnicos
+2. Agrega risk management real
+3. Hace el backtest honesto (walk-forward, Monte Carlo, DSR)
+4. Acelera 180x para que puedas probar mas combinaciones
 
-**Ahora:** Todo configurable vía `.env`. `DUKA_PATH` se busca en .env o en PATH del sistema. Cache de datos en `./data/` (configurable con `DATA_DIR`).
-
-### Bug #4: Slippage irreal
-**Antes:** 5 bps fijos. Para ETH en sesión líquida OK, para XAG en sesión illiquid Subestimado 10x.
-
-**Ahora:** 3 modelos:
-- `fixed`: igual que antes (compatibilidad)
-- `atr`: `base + α × ATR_pct` — mayor slippage en alta volatilidad
-- `stochastic`: `atr + ruido gaussiano` — más realista aún
-
-### Bug #5: Position sizing = 100% equity
-**Antes:** Cada trade usaba el 100% del equity. Diez trades malos seguidos = -15% cuenta.
-
-**Ahora:** Position sizing por:
-- Volatilidad objetivo: `size = min(max_position, target_vol / asset_vol)`
-- Riesgo fijo por trade: `unidades = (equity × risk_pct) / |entry - stop|`
-- Default conservador: 10% equity por trade, max 25%, max exposición total 50%
-
-### Bug #6: Backtest 70/30 una sola vez
-**Antes:** Optimizabas en 70% del periodo, validabas en 30%. Una sola prueba. Con 230,000 combinaciones, por puro chance docenas pasan ambos filtros.
-
-**Ahora:** 3 herramientas en `walk_forward.py`:
-1. **Walk-forward rolling:** divide datos en N ventanas. Optimiza/valida en cada una. Promedia resultados OOS reales.
-2. **Monte Carlo de trades:** reordena trades 10,000 veces. Devuelve percentil 5 (peor caso razonable) del drawdown y retorno. Calcula probabilidad de ruina.
-3. **Deflated Sharpe Ratio (Bailey & López de Prado 2014):** ajusta Sharpe por número de pruebas múltiples. Te dice si tu mejor estrategia es estadísticamente real o producto del azar.
-
-### Bug #7: Benchmark B&H incorrecto
-**Antes:** `df_bench = loader.get_data(..., "1d", limit=500)` — descargaba últimos 500 días de diario sin importar el periodo OOS real. Comparabas tu estrategia intradiaria en ETH 1h contra ETH diario de otro periodo.
-
-**Ahora:** `benchmark_buy_hold(is_oos=True)` calcula retorno y max DD de buy & hold en el **mismo periodo OOS exacto**.
-
-### Bug #8: Sin risk management
-**Antes:** Si perdías 50% en una semana, el bot seguía operando igual.
-
-**Ahora:** `risk_manager.py` implementa:
-- Kill switch hard (endpoint `/emergency_stop`)
-- Max drawdown stop (default 15% → pausa 24h)
-- Daily loss limit (default -3% → cierra todo el día)
-- Max exposure (default 50% del equity)
-- Max position size (default 25%)
-- Correlation check (no abrir long ETH si ya hay long BTC)
-- Duplicate symbol block
-
-### Bug #9: main.py era mock
-**Antes:** Código CCXT comentado. Endpoint devolvía "Orden procesada" sin hacer nada.
-
-**Ahora:** `main.py` con:
-- CCXT real (Binance Futuros testnet o production)
-- Reintentos con backoff exponencial (DDoS, Network errors)
-- Idempotencia con `client_order_id` (no duplicar si hay timeout)
-- Integración con RiskManager antes de ejecutar
-- Alertas Telegram
-- Endpoints: `/`, `/status`, `/webhook/tradingview`, `/emergency_stop`
-
-## 🧪 Tests
-
-```bash
-pytest tests/ -v
-# 44 passed in 13.54s
-```
-
-Cobertura:
-- `test_config.py` (5) — configuración
-- `test_generator.py` (8) — features long/short/both, combinaciones
-- `test_backtester.py` (7) — slippage models, métricas, B&H, shorts
-- `test_risk_manager.py` (9) — kill switch, DD, daily loss, exposure, correlación, sizing
-- `test_walk_forward.py` (7) — Monte Carlo, DSR, reproducibilidad
-- `test_pine_translator.py` (8) — long, short, mixed, sizing, webhook payload
-
-## ⚠️ Qué NO está hecho todavía
-
-Ver `NEXT_STEPS.md` para el plan detallado de:
-- **FASE 2:** Risk management avanzado (vol-target dinámico, regime detection, VaR/CVaR)
-- **FASE 3:** Ejecución robusta (reconciliación, heartbeat, partial fills, OMS completo)
-- **FASE 4:** Infraestructura (Docker, VPS, monitoring, alertas)
-- **FASE 5:** Paper trading → live con capital mínimo
-
-## 🎓 Lección brutal
-
-Tu proyecto original era un **backtester de fuerza bruta con UI linda**, no un sistema de trading. Las 64 estrategias "ganadoras" que tenías guardadas eran todas:
-- ETH/USDT long-only
-- En el periodo 2023-2026 (uno de los mercados alcistas más fuertes de la historia)
-- Con Profit Factors de 17.96 (matemáticamente casi imposible en trading real)
-- Sin slippage realista, sin walk-forward, sin Monte Carlo
-
-Cualquier estrategia long en ETH habría hecho eso. No descubriste alpha, descubriste beta disfrazado. Si corrías ese mismo escáner en ETH durante el bear market 2022 (de $4800 a $900), **ninguna de las 64 habría sobrevivido**.
-
-Este refactor arregla los bugs técnicos. El resto depende de vos:
-1. Corré el nuevo backtester con `slippage_model='atr'` y `direction='both'` en ETH durante 2022. Vas a ver la realidad.
-2. Si tu estrategia no le gana al buy & hold del mismo periodo, no es estrategia, es forma cara de comprar y mantener.
-3. Paper trading en Binance Testnet **mínimo 2 meses** antes de poner un peso.
-4. El risk management es el 70% del éxito. La estrategia es el 30%.
+El resto depende de vos: correrlo en bear market 2022 y ver la verdad, paper trading 2 meses minimo, despues live con $500.

@@ -1,17 +1,11 @@
 """
 frontend/app.py — Streamlit Dashboard para AG Pro 3.1 (con FastBacktester).
-
-Cambios vs versión anterior:
-- Usa FastBacktester (numpy + numba) en vez de VectorizedBacktester (vectorbt)
-- 9000 estrategias/segundo en vez de explotar memoria
-- Soporta max_conditions=5 o 6 sin problema
-- Procesa TODAS las combinaciones, no en lotes pequeños
-- Mantiene walk-forward, Monte Carlo, dirección long/short/both
 """
 from __future__ import annotations
 
 import os
 import sys
+import time as _time
 from pathlib import Path
 
 import numpy as np
@@ -30,7 +24,35 @@ from backend.walk_forward import WalkForwardAnalyzer
 
 log = get_logger(__name__)
 
-# ─── Configuración de página ─────────────────────────────────
+
+def _reconstruct_entries(strat_name, direction_str, generator, df_data):
+    try:
+        conditions = [c.strip() for c in strat_name.split("+")]
+        combined = pd.Series(True, index=df_data.index)
+        for cond in conditions:
+            clean = cond[2:] if cond.startswith(("L:", "S:")) else cond
+            if direction_str == "LONG":
+                feat = generator.bull_features.get(clean)
+            else:
+                feat = generator.bear_features.get(clean)
+            if feat is None:
+                return None
+            combined = combined & feat
+        return combined
+    except Exception:
+        return None
+
+
+def _filter_passed(df, min_pf, max_dd, min_sqn, min_trades):
+    return df[
+        (df["Profit Factor"].fillna(0) >= min_pf) &
+        (df["Max Drawdown (%)"].fillna(100) <= max_dd) &
+        (df["SQN"].fillna(0) >= min_sqn) &
+        (df["Trades"] >= min_trades) &
+        (df["Retorno (%)"].fillna(-999) > 0)
+    ].copy()
+
+
 st.set_page_config(
     page_title="AG Pro 3.1 | Quant Strategy Builder",
     page_icon="⚡",
@@ -44,7 +66,6 @@ try:
 except Exception:
     pass
 
-# ─── Session state ────────────────────────────────────────────
 if "scan_completed" not in st.session_state:
     st.session_state.scan_completed = False
 if "final_ranking" not in st.session_state:
@@ -57,7 +78,6 @@ if "mc_result" not in st.session_state:
 st.title("⚡ AG Pro 3.1 — Fast Engine (numpy + numba)")
 st.markdown("Backtester ultra-rápido: 9000+ estrategias/segundo. Soporta max_conditions=6.")
 
-# ─── Sidebar ─────────────────────────────────────────────────
 with st.sidebar:
     st.header("⚙️ Configuración")
 
@@ -114,8 +134,6 @@ with st.sidebar:
     st.subheader("⚙️ Generador")
     max_cond = st.slider("Máx indicadores combinados", 1, 6, 4,
                          help="Con FastBacktester podés usar hasta 6 sin problema.")
-    show_only_passed = st.checkbox("Solo mostrar estrategias que pasan filtros", value=True,
-                                   help="Si desactivado, muestra TODAS las combinaciones (puede ser lento de renderizar).")
 
     st.markdown("---")
     st.subheader("🔬 Modo Honesto")
@@ -128,12 +146,10 @@ with st.sidebar:
 
     ejecutar = st.button("🚀 Iniciar Scanner", use_container_width=True, type="primary")
 
-# ─── Tabs ─────────────────────────────────────────────────────
 tab_scanner, tab_robustez, tab_estado = st.tabs([
     "🔍 Scanner", "🔬 Análisis de Robustez", "📡 Estado del Sistema"
 ])
 
-# ─── Tab: Estado ──────────────────────────────────────────────
 with tab_estado:
     st.subheader("📡 Estado del Sistema")
     col1, col2, col3 = st.columns(3)
@@ -151,12 +167,13 @@ with tab_estado:
         "- Compilación JIT automática en primer uso (puede tardar 5s la primera vez)"
     )
 
-# ─── Tab: Scanner ─────────────────────────────────────────────
 with tab_scanner:
     if ejecutar:
         st.session_state.scan_completed = False
+        st.session_state.walk_forward_result = None
+        st.session_state.mc_result = None
+
         try:
-            # 1. Datos
             with st.spinner(f"📥 Descargando {symbol} ({mercado}) {timeframe}..."):
                 loader = UniversalDataLoader()
                 df_data = loader.get_data(
@@ -167,26 +184,11 @@ with tab_scanner:
                 )
                 st.info(f"✅ {len(df_data):,} velas | {df_data.index[0].date()} → {df_data.index[-1].date()}")
 
-            # 2. Generar features
             with st.spinner("🧬 Calculando features (bull + bear)..."):
                 generator = StrategyGenerator(df_data)
                 generator.calculate_all_features()
                 st.info(f"Features: {len(generator.bull_features)} bull + {len(generator.bear_features)} bear")
 
-                # Pre-calcular DataFrame de features para acceso rápido
-                feature_dict = {}
-                if direction in ("long", "both"):
-                    for k, v in generator.bull_features.items():
-                        feature_dict[f"L:{k}"] = v
-                if direction in ("short", "both"):
-                    for k, v in generator.bear_features.items():
-                        feature_dict[f"S:{k}"] = v
-                if direction == "long":
-                    feature_dict = generator.bull_features
-                elif direction == "short":
-                    feature_dict = generator.bear_features
-
-            # 3. Backtester
             bt = FastBacktester(
                 df_data,
                 sl_pct=sl_pct,
@@ -196,11 +198,9 @@ with tab_scanner:
                 freq=vbt_freq,
             )
 
-            # 4. Generar combinaciones y backtestear
-            import time as _time
             t_start = _time.time()
 
-            with st.spinner(f"🚀 Generando y backtesteando combinaciones (max_conditions={max_cond}, direction={direction})..."):
+            with st.spinner(f"🚀 Generando y backtesteando (max_conditions={max_cond}, direction={direction})..."):
                 progress = st.progress(0.0)
                 status = st.empty()
 
@@ -209,27 +209,20 @@ with tab_scanner:
                 total_passed_is = 0
 
                 for entries_batch, total_combos in generator.generate_combinations_in_batches(
-                    direction=direction,  # type: ignore
+                    direction=direction,
                     max_conditions=max_cond,
-                    batch_size=5000,  # ahora sí podemos usar batch grande
+                    batch_size=5000,
                 ):
-                    # Para cada estrategia del batch, determinar dirección
-                    # Si todas las condiciones son L: → long
-                    # Si todas son S: → short
-                    # Si mixto → por ahora tomamos la primera como dirección (mejorable)
                     columns = entries_batch.columns.tolist()
                     long_cols = [c for c in columns if not c.startswith("S:")]
                     short_cols = [c for c in columns if c.startswith("S:")]
-                    mixed_cols = [c for c in columns if ("L:" in c and "S:" in c)]
 
-                    # Procesar estrategias LONG (todas las condiciones son L: o sin prefijo)
                     if long_cols:
                         entries_long = entries_batch[long_cols]
                         results_long = bt.run_many(entries_long, direction=1)
                         results_long["Direction"] = "LONG"
                         all_results.append(results_long.reset_index())
 
-                    # Procesar estrategias SHORT (todas las condiciones son S:)
                     if short_cols:
                         entries_short = entries_batch[short_cols]
                         results_short = bt.run_many(entries_short, direction=-1)
@@ -239,45 +232,31 @@ with tab_scanner:
                     total_evaluated += len(columns)
                     progress.progress(min(total_evaluated / total_combos, 1.0))
 
-                    passed_now = sum(
-                        1 for r in (all_results[-1].to_dict("records") if all_results else [])
-                        if r.get("Profit Factor", 0) and r["Profit Factor"] >= min_pf
-                        and r.get("Max Drawdown (%)", 100) <= max_dd
-                        and r.get("SQN", 0) >= min_sqn
-                        and r.get("Trades", 0) >= min_trades
-                        and r.get("Retorno (%)", -999) > 0
-                    )
-                    total_passed_is += passed_now
+                    for r_df in (all_results[-2:] if long_cols and short_cols else all_results[-1:]):
+                        passed_now = _filter_passed(r_df, min_pf, max_dd, min_sqn, min_trades)
+                        total_passed_is += len(passed_now)
 
+                    elapsed = _time.time() - t_start
+                    speed = total_evaluated / elapsed if elapsed > 0 else 0
                     status.text(
                         f"{total_evaluated:,} / {total_combos:,} | "
                         f"Pasan IS: {total_passed_is:,} | "
-                        f"Speed: {total_evaluated/(_time.time()-t_start):.0f} strats/seg"
+                        f"Speed: {speed:.0f} strats/seg"
                     )
 
             t_end = _time.time()
-            st.success(f"✅ Backtest completo en {t_end-t_start:.1f}s | {total_evaluated:,} estrategias evaluadas")
+            st.success(f"✅ Backtest completo en {t_end-t_start:.1f}s | {total_evaluated:,} estrategias")
 
-            # 5. Consolidar resultados
             if all_results:
                 results_df = pd.concat(all_results, ignore_index=True)
             else:
                 results_df = pd.DataFrame()
 
             if len(results_df) > 0:
-                # 5a. Filtrar IS
-                passed_is = results_df[
-                    (results_df["Profit Factor"].fillna(0) >= min_pf) &
-                    (results_df["Max Drawdown (%)"].fillna(100) <= max_dd) &
-                    (results_df["SQN"].fillna(0) >= min_sqn) &
-                    (results_df["Trades"] >= min_trades) &
-                    (results_df["Retorno (%)"].fillna(-999) > 0)
-                ].copy()
+                passed_is = _filter_passed(results_df, min_pf, max_dd, min_sqn, min_trades)
 
-                # 5b. Para cada estrategia que pasó IS, hacer backtest OOS
                 if len(passed_is) > 0:
                     with st.spinner(f"🔬 Validando {len(passed_is)} estrategias en OOS..."):
-                        # Split data
                         split_idx = int(len(df_data) * 0.7)
                         df_oos = df_data.iloc[split_idx:]
                         bt_oos = FastBacktester(
@@ -294,12 +273,12 @@ with tab_scanner:
                             strat_name = row["Estrategia"]
                             direction_str = row["Direction"]
 
-                            # Reconstruir entries para OOS
                             entries_series = _reconstruct_entries(
                                 strat_name, direction_str, generator, df_data
                             )
                             if entries_series is None:
                                 continue
+
                             entries_oos = entries_series.iloc[split_idx:]
                             r = bt_oos.run_single(entries_oos, direction=1 if direction_str == "LONG" else -1)
 
@@ -312,7 +291,7 @@ with tab_scanner:
                                 "Win Rate OOS (%)": r.win_rate * 100,
                                 "SQN OOS": r.sqn,
                                 "Trades OOS": r.n_trades,
-                                "trades_pnl_obj": r.trades_pnl,  # guardamos array para MC
+                                "trades_pnl_obj": r.trades_pnl,
                             })
 
                         oos_df = pd.DataFrame(oos_results)
@@ -322,10 +301,8 @@ with tab_scanner:
                             (oos_df["Trades OOS"] >= max(5, min_trades // 2))
                         ].sort_values("SQN OOS", ascending=False).reset_index(drop=True)
 
-                        # Benchmark B&H OOS
                         bh = bt.benchmark_buy_hold(is_oos=True)
 
-                        # Capital final con $500
                         capital = 500
                         passed_oos["Dinero Final ($500)"] = capital * (1 + passed_oos["Retorno OOS (%)"] / 100)
                         passed_oos["vs Buy&Hold (%)"] = passed_oos["Retorno OOS (%)"] - bh["buy_hold_return_pct"]
@@ -334,7 +311,6 @@ with tab_scanner:
                         st.session_state.bh_oos = bh
                         st.session_state.scan_completed = True
 
-                        # Guardar datos para walk-forward y MC
                         if len(passed_oos) > 0:
                             best = passed_oos.iloc[0]
                             st.session_state.best_strat_name = best["Estrategia"]
@@ -343,11 +319,12 @@ with tab_scanner:
                 else:
                     st.warning("Ninguna estrategia superó los filtros IS.")
                     st.session_state.final_ranking = pd.DataFrame()
+                    st.session_state.scan_completed = True
             else:
                 st.warning("No se generaron resultados.")
                 st.session_state.final_ranking = pd.DataFrame()
+                st.session_state.scan_completed = True
 
-            # 6. Walk-forward
             if run_walk_forward and "best_strat_name" in st.session_state:
                 with st.spinner(f"🔬 Walk-Forward ({wf_windows} ventanas)..."):
                     entries_full = _reconstruct_entries(
@@ -357,24 +334,23 @@ with tab_scanner:
                         df_data,
                     )
                     if entries_full is not None:
-                        # Para WF usamos VectorizedBacktester (lento pero flexible)
-                        # O implementamos WF con FastBacktester
                         from backend.backtester import BacktestConfig, VectorizedBacktester
                         vb = VectorizedBacktester(df_data, config=BacktestConfig(
-                            sl_pct=sl_pct, tp_pct=tp_pct, fees=fees_input, slippage=slippage_input, freq=vbt_freq
+                            sl_pct=sl_pct, tp_pct=tp_pct, fees=fees_input,
+                            slippage_pct=slippage_input, freq=vbt_freq
                         ))
                         analyzer = WalkForwardAnalyzer(df_data, vb)
                         wf_result = analyzer.run_walk_forward(entries_full, n_windows=wf_windows)
                         st.session_state.walk_forward_result = wf_result
 
-            # 7. Monte Carlo
             if run_monte_carlo and "best_trades_pnl" in st.session_state:
                 with st.spinner(f"🎲 Monte Carlo ({mc_sims:,} simulaciones)..."):
                     trades_list = st.session_state.best_trades_pnl
                     if trades_list is not None and len(trades_list) >= 5:
                         from backend.backtester import BacktestConfig, VectorizedBacktester
                         vb = VectorizedBacktester(df_data, config=BacktestConfig(
-                            sl_pct=sl_pct, tp_pct=tp_pct, fees=fees_input, slippage=slippage_input, freq=vbt_freq
+                            sl_pct=sl_pct, tp_pct=tp_pct, fees=fees_input,
+                            slippage_pct=slippage_input, freq=vbt_freq
                         ))
                         analyzer = WalkForwardAnalyzer(df_data, vb)
                         mc_result = analyzer.run_monte_carlo(
@@ -386,14 +362,13 @@ with tab_scanner:
             st.error(f"❌ Error: {e}")
             st.exception(e)
 
-    # ─── Mostrar Resultados ─────────────────────────────────
     if st.session_state.scan_completed:
         final_ranking = st.session_state.final_ranking
         bh = st.session_state.get("bh_oos", {"buy_hold_return_pct": 0, "buy_hold_max_dd_pct": 0})
 
         st.markdown("---")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Estrategias IS", f"{len(final_ranking):,}")
+        c1.metric("Estrategias OOS", f"{len(final_ranking):,}")
         c2.metric("Buy & Hold OOS", f"{bh['buy_hold_return_pct']:.2f}%")
         c3.metric("B&H Max DD", f"{bh['buy_hold_max_dd_pct']:.2f}%")
         c4.metric("Dirección", "LONG+SHORT" if "Direction" in final_ranking.columns else "—")
@@ -405,11 +380,9 @@ with tab_scanner:
                 f"Si no lo hace, no es estrategia, es forma cara de comprar y mantener."
             )
 
-            # Limpiar columna interna antes de mostrar
             display_cols = [c for c in final_ranking.columns if c != "trades_pnl_obj"]
             st.dataframe(final_ranking[display_cols].head(30), use_container_width=True)
 
-            # Pine Script de la mejor
             st.markdown("---")
             st.subheader("📜 Pine Script — Mejor Estrategia")
             best = final_ranking.iloc[0]
@@ -428,14 +401,12 @@ with tab_scanner:
             st.warning("Ninguna estrategia sobrevivió IS+OOS. Probá filtros más relajados.")
 
 
-# ─── Tab: Robustez ────────────────────────────────────────────
 with tab_robustez:
     st.subheader("🔬 Análisis de Robustez Estadística")
 
     if not st.session_state.scan_completed:
         st.info("Ejecutá el scanner primero. Activá Walk-Forward y/o Monte Carlo en el sidebar.")
     else:
-        # Walk-Forward
         if st.session_state.walk_forward_result:
             wf = st.session_state.walk_forward_result
             st.markdown("### 📊 Walk-Forward Rolling")
@@ -467,7 +438,6 @@ with tab_robustez:
             else:
                 st.success(f"✅ Consistencia alta ({wf.consistency_ratio*100:.0f}%). Estrategia robusta.")
 
-        # Monte Carlo
         if st.session_state.mc_result:
             mc = st.session_state.mc_result
             st.markdown("### 🎲 Monte Carlo de Trades")
@@ -494,24 +464,3 @@ with tab_robustez:
 
         if not st.session_state.walk_forward_result and not st.session_state.mc_result:
             st.info("Activá Walk-Forward y/o Monte Carlo en el sidebar y volvé a ejecutar.")
-
-
-# ──────────────────────────────────────────────────────────────
-def _reconstruct_entries(strat_name, direction_str, generator, df_data):
-    """Reconstruye la serie de entries a partir del nombre de estrategia."""
-    try:
-        conditions = [c.strip() for c in strat_name.split("+")]
-        combined = pd.Series(True, index=df_data.index)
-        for cond in conditions:
-            # Quitar prefijo L:/S:
-            clean = cond[2:] if cond.startswith(("L:", "S:")) else cond
-            if direction_str == "LONG":
-                feat = generator.bull_features.get(clean)
-            else:
-                feat = generator.bear_features.get(clean)
-            if feat is None:
-                return None
-            combined = combined & feat
-        return combined
-    except Exception:
-        return None

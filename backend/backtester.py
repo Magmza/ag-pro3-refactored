@@ -1,16 +1,7 @@
 """
 backtester.py — Motor de backtest vectorizado con vectorbt.
 
-Mejoras críticas vs original:
-- Slippage REALISTA y configurable (no fijo 0.05%):
-  * Constante: slippage_pct
-  * Variable: slippage_pct + alpha * ATR_pct (mayor en volatilidad)
-  * Estocástico gaussiano: distribución N(media, std)
-- Fees configurables por trade
-- Soporta LONG y SHORT (no solo long como el original)
-- Benchmark vs Buy&Hold calculado en el MISMO periodo
-- Walk-forward delegado a walk_forward.py
-- Logging estructurado
+Usado por walk_forward.py. Para el scanner principal usar fast_backtester.py.
 """
 from __future__ import annotations
 
@@ -30,13 +21,13 @@ SlippageModel = Literal["fixed", "atr", "stochastic"]
 
 @dataclass
 class BacktestConfig:
-    """Configuración del backtest. Pásala para sobreescribir defaults."""
-    fees: float = 0.0005            # 5 bps por lado (taker en Binance Futuros)
-    slippage_pct: float = 0.0005    # 5 bps base
+    """Configuración del backtest."""
+    fees: float = 0.0005
+    slippage_pct: float = 0.0005
     slippage_model: SlippageModel = "fixed"
-    slippage_atr_alpha: float = 0.3   # solo para model='atr'
+    slippage_atr_alpha: float = 0.3
     slippage_atr_window: int = 14
-    slippage_stochastic_std: float = 0.0003  # solo para model='stochastic'
+    slippage_stochastic_std: float = 0.0003
     sl_pct: float = 0.015
     tp_pct: float = 0.030
     freq: str = "1h"
@@ -44,34 +35,20 @@ class BacktestConfig:
 
 
 class VectorizedBacktester:
-    """
-    Backtester con SL/TP fijos.
+    """Backtester con SL/TP fijos via vectorbt."""
 
-    Uso:
-        bt = VectorizedBacktester(df, config=BacktestConfig(slippage_model='atr'))
-        portfolio = bt.run(entries_long, entries_short=None)
-        metrics = bt.calculate_professional_metrics(portfolio)
-    """
-
-    def __init__(
-        self,
-        data: pd.DataFrame,
-        config: BacktestConfig | None = None,
-    ) -> None:
+    def __init__(self, data, config=None):
         self.data = data
         self.cfg = config or BacktestConfig()
         self._slippage_series = self._compute_slippage_series()
 
-    # ──────────────────────────────────────────────────────────
-    def _compute_slippage_series(self) -> pd.Series:
-        """Devuelve serie de slippage por barra según el modelo elegido."""
+    def _compute_slippage_series(self):
         n = len(self.data)
         base = pd.Series(self.cfg.slippage_pct, index=self.data.index)
 
         if self.cfg.slippage_model == "fixed":
             return base
 
-        # ATR
         high, low, close = self.data["High"], self.data["Low"], self.data["Close"]
         tr = pd.concat(
             [(high - low), (high - close.shift()).abs(), (low - close.shift()).abs()],
@@ -92,26 +69,7 @@ class VectorizedBacktester:
 
         return base
 
-    # ──────────────────────────────────────────────────────────
-    def run(
-        self,
-        entries_long: pd.Series | pd.DataFrame | None = None,
-        entries_short: pd.Series | pd.DataFrame | None = None,
-        is_oos: bool | None = None,
-    ) -> vbt.Portfolio:
-        """
-        Ejecuta backtest.
-
-        Args:
-            entries_long:  Serie(s) booleanas de entrada LONG
-            entries_short: Serie(s) booleanas de entrada SHORT
-            is_oos:        None = todo el dataset
-                           True = solo último 30% (OOS)
-                           False = solo primer 70% (IS)
-
-        Returns:
-            vbt.Portfolio
-        """
+    def run(self, entries_long=None, entries_short=None, is_oos=None):
         if is_oos is not None:
             split_idx = int(len(self.data) * 0.7)
             if is_oos:
@@ -127,7 +85,6 @@ class VectorizedBacktester:
             el, es = entries_long, entries_short
 
         if el is not None and es is not None:
-            # Modo both: vectorbt soporta entradas long+short
             portfolio = vbt.Portfolio.from_signals(
                 data["Close"],
                 entries=el,
@@ -149,7 +106,6 @@ class VectorizedBacktester:
                 freq=self.cfg.freq,
             )
         elif es is not None:
-            # Solo short: invertimos señales usando short_entries
             portfolio = vbt.Portfolio.from_signals(
                 data["Close"],
                 short_entries=es,
@@ -164,28 +120,20 @@ class VectorizedBacktester:
 
         return portfolio
 
-    # ──────────────────────────────────────────────────────────
     @staticmethod
-    def _sanitize(arr) -> pd.Series | np.ndarray:
-        """Reemplaza inf/-inf con NaN."""
+    def _sanitize(arr):
         if isinstance(arr, pd.Series):
             return arr.replace([np.inf, -np.inf], np.nan)
         return np.where(np.isinf(arr), np.nan, arr)
 
-    # ──────────────────────────────────────────────────────────
-    def calculate_professional_metrics(self, portfolio: vbt.Portfolio) -> pd.DataFrame:
-        """Calcula métricas institucionales. Devuelve DataFrame."""
+    def calculate_professional_metrics(self, portfolio):
         trades = portfolio.trades
 
-        # Cuando se pasa UNA sola serie de entries, vectorbt devuelve escalares.
-        # Cuando se pasa un DataFrame (múltiples estrategias), devuelve Series.
-        # Normalizamos todo a Series para consistencia.
         def _to_series(val, name="value"):
             if isinstance(val, pd.Series):
                 return val
             if isinstance(val, (int, float, np.integer, np.floating)):
                 return pd.Series([val], name=name)
-            # np.ndarray 0-d o 1-d
             arr = np.atleast_1d(val)
             return pd.Series(arr, name=name)
 
@@ -198,7 +146,6 @@ class VectorizedBacktester:
         sortino = _to_series(portfolio.sortino_ratio(), "sortino")
         calmar = _to_series(portfolio.calmar_ratio(), "calmar")
 
-        # Alinear índices
         idx = total_return.index
         max_dd = max_dd.reindex(idx).fillna(0)
         win_rate = win_rate.reindex(idx).fillna(0)
@@ -210,39 +157,30 @@ class VectorizedBacktester:
 
         recovery_factor = total_return / np.where(max_dd > 0, max_dd, np.nan)
 
-        # Expectancy analítica para SL/TP fijos (binomial)
         wr = win_rate.fillna(0)
         expectancy = (wr * self.cfg.tp_pct) - ((1 - wr) * self.cfg.sl_pct)
 
-        # SQN analítico
         variance = (wr * self.cfg.tp_pct**2) + ((1 - wr) * self.cfg.sl_pct**2) - expectancy**2
         std_trade = np.sqrt(np.maximum(variance, 1e-12))
         sqn = (expectancy / std_trade) * np.sqrt(n_trades)
 
         metrics_df = pd.DataFrame({
-            "Retorno (%)":       self._sanitize(total_return * 100),
-            "Profit Factor":     self._sanitize(profit_factor),
-            "Max Drawdown (%)":  self._sanitize(max_dd * 100),
-            "Win Rate (%)":      self._sanitize(win_rate * 100),
-            "Expectancy":        self._sanitize(expectancy),
-            "Recovery Factor":   self._sanitize(recovery_factor),
-            "Sharpe Ratio":      self._sanitize(sharpe),
-            "Sortino Ratio":     self._sanitize(sortino),
-            "Calmar Ratio":      self._sanitize(calmar),
-            "SQN":               self._sanitize(sqn),
-            "Trades":            n_trades,
+            "Retorno (%)": self._sanitize(total_return * 100),
+            "Profit Factor": self._sanitize(profit_factor),
+            "Max Drawdown (%)": self._sanitize(max_dd * 100),
+            "Win Rate (%)": self._sanitize(win_rate * 100),
+            "Expectancy": self._sanitize(expectancy),
+            "Recovery Factor": self._sanitize(recovery_factor),
+            "Sharpe Ratio": self._sanitize(sharpe),
+            "Sortino Ratio": self._sanitize(sortino),
+            "Calmar Ratio": self._sanitize(calmar),
+            "SQN": self._sanitize(sqn),
+            "Trades": n_trades,
         })
 
         return metrics_df
 
-    # ──────────────────────────────────────────────────────────
-    def benchmark_buy_hold(
-        self, is_oos: bool | None = None
-    ) -> dict[str, float]:
-        """
-        Benchmark vs Buy & Hold en el MISMO periodo.
-        Esto es crítico: tu estrategia debe superar al buy&hold del mismo lapso.
-        """
+    def benchmark_buy_hold(self, is_oos=None):
         if is_oos is not None:
             split_idx = int(len(self.data) * 0.7)
             data = self.data.iloc[split_idx:] if is_oos else self.data.iloc[:split_idx]
@@ -254,11 +192,10 @@ class VectorizedBacktester:
 
         ret = (data["Close"].iloc[-1] / data["Close"].iloc[0] - 1) * 100
 
-        # Max drawdown del buy & hold
         cum = (1 + data["Close"].pct_change().fillna(0)).cumprod()
         running_max = cum.cummax()
         dd = (cum - running_max) / running_max
-        max_dd_pct = float(dd.min() * 100)  # negativo
+        max_dd_pct = float(dd.min() * 100)
 
         return {
             "buy_hold_return_pct": float(ret),
